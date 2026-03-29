@@ -1,64 +1,34 @@
 from flask import Flask, render_template, request, jsonify, send_file
 import requests
 import re
-from time import sleep
 import csv
 import io
 from datetime import datetime
 import concurrent.futures
-import threading
-
-import subprocess
-import os
-from pathlib import Path
-
-def build_tailwind():
-    """
-    Builds the Tailwind CSS file using the tailwindcss CLI.
-    Returns True if successful, False otherwise.
-    """
-    try:
-        # Run the tailwind CLI command to build CSS
-        result = subprocess.run(
-            ["npx", "@tailwindcss/cli", "-i", "./static/input.css", "-o", "./static/output.css"],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode != 0:
-            print(f"Tailwind build failed: {result.stderr}")
-            return False
-        
-        print("Tailwind CSS built successfully")
-        return True
-    except Exception as e:
-        print(f"Error building Tailwind CSS: {str(e)}")
-        return False
-
-# uncomment if using local tailwind installation
-# build_tailwind()
 
 app = Flask(__name__)
 
-# Constants
-url_template = "https://postings.speechwire.com/r-uil-academics.php?"
-competitions = {
-    1: "Accounting", 8: "Calculator", 
+URL = "https://postings.speechwire.com/r-uil-academics.php?"
+YEAR_OFFSET = 2008
+MIN_YEAR = 2023
+COMPETITIONS = {
+    1: "Accounting", 8: "Calculator",
     9: "CS", 3: "Current Events", 10: "Math", 11: "Number Sense",
     12: "Science", 7: "Spelling", 4: "Lit Crit", 6: "Social Studies"
 }
 
-def req(dist="", reg="", state="", comp="", conf=""):
-    inp = f"{url_template}groupingid={comp}&Submit=View+Postings&region={reg}&district={dist}&state={state}&conference={conf}&seasonid={year}"
-    return requests.get(inp).content.decode()
+def available_years():
+    return list(range(MIN_YEAR, datetime.now().year + 1))
 
-def process_single_district(district_num):
-    """
-    Process a single district and return its results.
-    This function is designed to be run in a thread pool.
-    """
+def req(params, dist="", reg="", state=""):
+    url = f"{URL}groupingid={params['subj']}&Submit=View+Postings&region={reg}&district={dist}&state={state}&conference={params['conf']}&seasonid={params['year']}"
+    return requests.get(url, timeout=10).content.decode()
+
+def process_single_district(district_num, params):
+    # scrape a single district, return (indiv, team, mxbio, mxchem, mxphys, empty)
     try:
-        scrape = req(dist=str(district_num), comp=str(subj), conf=conf)
+        subj, comp, conf = params['subj'], params['comp'], params['conf']
+        scrape = req(params, dist=str(district_num))
         tmp = ("0" if district_num < 10 else "") + str(district_num)
         regex = f"<tr>.*?{tmp}-{conf}A.*?</tr>"
         indiv_places = re.findall(regex, scrape)
@@ -123,369 +93,267 @@ def process_single_district(district_num):
                 print(f"Error processing team row in district {district_num}: {str(e)}")
                 continue
             
-        print(f"Finished District {district_num}")
-
-        # does this matter?
-        # sleep(0.25)
-        
         return indiv_results, team_results, mxbio, mxchem, mxphys, []
         
     except Exception as e:
         print(f"Error processing district {district_num}: {str(e)}")
         return None, None, None, None, None, [district_num]
 
-def district_parser(reg_number):
-    indiv_results = []
-    team_results = []
-    mxbio, mxchem, mxphys = dict(), dict(), dict()
-    empty_districts = []
-    
-    # Create a thread pool to process districts concurrently
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        # Submit all district processing tasks
-        future_to_district = {
-            executor.submit(process_single_district, i): i 
-            for i in range(reg_number * 8 - 7, reg_number * 8 + 1)
-        }
-        
-        # Process results as they complete
-        for future in concurrent.futures.as_completed(future_to_district):
-            district_num = future_to_district[future]
-            try:
-                dist_indiv, dist_team, dist_mxbio, dist_mxchem, dist_mxphys, dist_empty = future.result()
-                
-                if dist_indiv is None:
-                    empty_districts.extend(dist_empty)
-                    continue
-                    
-                # Merge results
-                indiv_results.extend(dist_indiv)
-                team_results.extend(dist_team)
-                
-                # Merge max scores for Science
-                if subj == 12:
-                    for k, v in dist_mxbio.items():
-                        if k in mxbio:
-                            mxbio[k] = max(mxbio[k], v)
-                        else:
-                            mxbio[k] = v
-                            
-                    for k, v in dist_mxchem.items():
-                        if k in mxchem:
-                            mxchem[k] = max(mxchem[k], v)
-                        else:
-                            mxchem[k] = v
-                            
-                    for k, v in dist_mxphys.items():
-                        if k in mxphys:
-                            mxphys[k] = max(mxphys[k], v)
-                        else:
-                            mxphys[k] = v
-                            
-            except Exception as e:
-                print(f"Error processing results for district {district_num}: {str(e)}")
-                empty_districts.append(district_num)
+def _merge_max(dest, src):
+    for k, v in src.items():
+        dest[k] = max(dest.get(k, v), v)
 
-    # Sort all results
-    indiv_results.sort(reverse=True)
-    team_results.sort(reverse=True)
-    
-    # Store all results before filtering
-    all_indiv = indiv_results[:]
-    all_team = team_results[:]
-    
-    # Filter team results to only advancing teams
-    tmp, found = [], False
+def _location_num(location_str):
+    # "District 5" -> 5, "Region 2" -> 2
+    return int(location_str.split(' ')[1])
+
+def _filter_qualifiers(indiv_results, team_results, subj, mxbio, mxchem, mxphys):
+    # filter teams: all 1st + best 2nd (wildcard)
+    qualified_teams = []
+    wildcard_team = None
     for x in team_results:
         if x[3] == "1st":
-            tmp.append(x)
-        elif x[3] == "2nd" and not found:
-            tmp.append(x)
-            found = True 
-    team_results = tmp
-    
-    # Filter individual results to only advancing individuals
-    tmp = []
-    for x in indiv_results:
-        found = False
-        for team in team_results:
-            found |= (x[2] in team[-1])
-        if subj == 12:  # Science
-            b = (mxbio[int(x[4][9:])] == x[-3])
-            c = (mxchem[int(x[4][9:])] == x[-2])
-            p = (mxphys[int(x[4][9:])] == x[-1])
-            found |= (b or c or p)
-        if x[1] in ['1st', '2nd', '3rd'] or found:
-            tmp.append(x)
-    indiv_results = tmp
-    
-    return indiv_results, team_results, all_indiv, all_team, empty_districts
+            qualified_teams.append(x)
+        elif x[3] == "2nd" and wildcard_team is None:
+            wildcard_team = x
+            qualified_teams.append(x)
 
-def regional_parser():
-    indiv_results = []
-    team_results = []
-    mxbio, mxchem, mxphys = dict(), dict(), dict()
-    
+    # filter individuals: top 3 or on advancing team or science top sub-event
+    qualified_indiv = []
+    for x in indiv_results:
+        on_team = any(x[2] in team[-1] for team in qualified_teams)
+        top_sub = False
+        if subj == 12:
+            loc = _location_num(x[4])
+            top_sub = (mxbio.get(loc) == x[-3] or mxchem.get(loc) == x[-2] or mxphys.get(loc) == x[-1])
+        if x[1] in ['1st', '2nd', '3rd'] or on_team or top_sub:
+            qualified_indiv.append(x)
+
+    return qualified_indiv, qualified_teams, wildcard_team
+
+def district_parser(reg_number, params):
+    subj = params['subj']
+    indiv_results, team_results = [], []
+    mxbio, mxchem, mxphys = {}, {}, {}
+    empty_districts = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_dist = {
+            executor.submit(process_single_district, i, params): i
+            for i in range(reg_number * 8 - 7, reg_number * 8 + 1)
+        }
+        for future in concurrent.futures.as_completed(future_to_dist):
+            district_num = future_to_dist[future]
+            try:
+                di, dt, db, dc, dp, de = future.result()
+                if di is None:
+                    empty_districts.extend(de)
+                    continue
+                indiv_results.extend(di)
+                team_results.extend(dt)
+                if subj == 12:
+                    _merge_max(mxbio, db)
+                    _merge_max(mxchem, dc)
+                    _merge_max(mxphys, dp)
+            except Exception as e:
+                print(f"error in district {district_num}: {e}")
+                empty_districts.append(district_num)
+
+    indiv_results.sort(reverse=True)
+    team_results.sort(reverse=True)
+    all_indiv, all_team = indiv_results[:], team_results[:]
+
+    qualified_indiv, qualified_teams, wildcard = _filter_qualifiers(
+        indiv_results, team_results, subj, mxbio, mxchem, mxphys)
+
+    return qualified_indiv, qualified_teams, all_indiv, all_team, empty_districts, wildcard
+
+def regional_parser(params):
+    subj, comp, conf = params['subj'], params['comp'], params['conf']
+    indiv_results, team_results = [], []
+    mxbio, mxchem, mxphys = {}, {}, {}
+
     for i in range(1, 5):
         try:
-            scrape = req(reg=str(i), comp=str(subj), conf=conf)
+            scrape = req(params, reg=str(i))
             regex = f"<tr>.*?{conf}A.*?</tr>"
             indiv_places = re.findall(regex, scrape)
-            
-            if len(indiv_places) == 0:
+
+            if not indiv_places:
                 indiv_places = re.findall("<tr>.*?HS.*?</tr>", scrape)
-            if len(indiv_places) == 0:
-                print(f"NOTHING IN REGION {i}, continuing...")
+            if not indiv_places:
+                print(f"nothing in region {i}, continuing...")
                 continue
-                
+
             for x in indiv_places:
                 values = re.findall("<td class='ddprint centered'>(.*?)</td>", x)
-                place = values[0]
-                school = values[1]
-                name = values[2].strip()
+                place, school, name = values[0], values[1], values[2].strip()
                 score = values[-3 if subj % 10 == 1 else -4]
-                try:
-                    score = int(score)
-                except:
-                    score = float(score)
+                try: score = int(score)
+                except: score = float(score)
                 tup = (score, place, name, school, f"Region {i}")
-                
+
                 if subj == 12:
                     bio, chem, phys = int(values[4]), int(values[5]), int(values[6])
                     tup = (score, place, name, school, f"Region {i}", bio, chem, phys)
-                    if i in mxbio: mxbio[i] = max(mxbio[i], bio)
-                    else: mxbio[i] = bio
-                    if i in mxchem: mxchem[i] = max(mxchem[i], chem)
-                    else: mxchem[i] = chem
-                    if i in mxphys: mxphys[i] = max(mxphys[i], phys)
-                    else: mxphys[i] = phys
+                    mxbio[i] = max(mxbio.get(i, bio), bio)
+                    mxchem[i] = max(mxchem.get(i, chem), chem)
+                    mxphys[i] = max(mxphys.get(i, phys), phys)
                 indiv_results.append(tup)
 
-            regex = "<tr>(.*?)</tr>"
-            team_places = re.findall(regex, scrape)
+            team_places = re.findall("<tr>(.*?)</tr>", scrape)
             for idx in range(len(indiv_places), len(team_places)):
                 x = team_places[idx].replace('\u00a0', ' ')
-                if x.count("<br>") < 2:  # Team rows have multiple <br> tags for member names
+                if x.count("<br>") < 2:
                     continue
-                    
                 try:
                     place = re.search(r"<td class='ddprint centered'>(.*?)<\/td>", x).group(1).strip()
                     school = re.search(r"<td class='ddprint centered'>(.*?)<span", x).group(1).strip()
                     school = school[school.rindex('>')+1:].strip()
-                    regex = r"<td class='ddprint centered'>(-?\d+)<\/td>"
+                    score_re = r"<td class='ddprint centered'>(-?\d+)<\/td>"
                     score, prog_score = 0, 0
-                    
                     if comp == "CS":
-                        score = re.search(regex * 2, x).group(2)
-                        prog_score = re.search(regex, x).group(1)
+                        score = re.search(score_re * 2, x).group(2)
+                        prog_score = re.search(score_re, x).group(1)
                     else:
-                        score = re.search(regex, x).group(1)
+                        score = re.search(score_re, x).group(1)
                     names = [(N if '<' not in N else N[:N.index('<')]).strip() for N in x.split("<br>")[1:]]
-                    if names:  # Only add if we found team members
-                        team_scores = sorted([tup for tup in indiv_results if tup[2] in names], key=lambda tup: tup[0], reverse=True)
+                    if names:
+                        team_scores = sorted([t for t in indiv_results if t[2] in names], key=lambda t: t[0], reverse=True)
                         team_results.append((int(score), prog_score if comp == "CS" else -999, -999 if len(team_scores) <= 3 else team_scores[3][0], place, school, f"Region {i}", names))
                 except Exception as e:
-                    print(f"Error processing team row in region {i}: {str(e)}")
+                    print(f"error in region {i} team row: {e}")
                     continue
-                
+
         except Exception as e:
-            print(f"Error processing region {i}: {str(e)}")
+            print(f"error in region {i}: {e}")
             continue
-            
-        print(f"Finished Region {i}")
+        print(f"finished region {i}")
 
-        # does this matter?
-        # sleep(0.25)
-
-    # Sort all results
     indiv_results.sort(reverse=True)
     team_results.sort(reverse=True)
-    
-    # Store all results before filtering
-    all_indiv = indiv_results[:]
-    all_team = team_results[:]
-    
-    # Filter team results to only advancing teams
-    tmp, found = [], False
-    for x in team_results:
-        if x[3] == "1st":
-            tmp.append(x)
-        elif x[3] == "2nd" and not found:
-            tmp.append(x)
-            found = True 
-    team_results = tmp
-    
-    # Filter individual results to only advancing individuals
-    tmp = []
-    for x in indiv_results:
-        found = False
-        for team in team_results:
-            found |= (x[2] in team[-1])
-        if subj == 12:  # Science
-            b = (mxbio[int(x[4][7:])] == x[-3])
-            c = (mxchem[int(x[4][7:])] == x[-2])
-            p = (mxphys[int(x[4][7:])] == x[-1])
-            found |= (b or c or p)
-        if x[1] in ['1st', '2nd', '3rd'] or found:
-            tmp.append(x)
-    indiv_results = tmp
+    all_indiv, all_team = indiv_results[:], team_results[:]
 
-    return indiv_results, team_results, all_indiv, all_team
+    qualified_indiv, qualified_teams, wildcard = _filter_qualifiers(
+        indiv_results, team_results, subj, mxbio, mxchem, mxphys)
+
+    return qualified_indiv, qualified_teams, all_indiv, all_team, wildcard
 
 @app.route('/')
 def index():
-    return render_template('index.html', competitions=competitions)
+    return render_template('index.html', competitions=COMPETITIONS, years=available_years())
 
 @app.route('/results', methods=['POST'])
 def get_results():
-    global year, conf, subj, comp
-    
     data = request.json
-    year = int(data['year']) - 2008
-    conf = int(data['conf'])
-    subj = int(data['comp'])
-    comp = competitions[subj]
+    params = {
+        'year': int(data['year']) - YEAR_OFFSET,
+        'conf': int(data['conf']),
+        'subj': int(data['comp']),
+        'comp': COMPETITIONS[int(data['comp'])],
+    }
     choice = int(data['choice'])
-    
+    subj, comp = params['subj'], params['comp']
+
+    wildcard = None
     if choice == 1:
         reg_number = int(data['region'])
-        indiv_results, team_results, all_indiv, all_team, empty_districts = district_parser(reg_number)
+        indiv_results, team_results, all_indiv, all_team, empty_districts, wildcard = district_parser(reg_number, params)
     elif choice == 2:
-        indiv_results, team_results = [], []
-        all_indiv, all_team = [], []
-        empty_districts = []
-        for r in range(1, 5):
-            I, T, AI, AT, E = district_parser(r)
-            indiv_results += I
-            team_results += T
-            all_indiv += AI
-            all_team += AT
-            empty_districts += E
+        # parallelize all 4 regions
+        indiv_results, team_results, all_indiv, all_team, empty_districts = [], [], [], [], []
+        wildcards = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(district_parser, r, params): r for r in range(1, 5)}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    I, T, AI, AT, E, W = future.result()
+                    indiv_results += I; team_results += T
+                    all_indiv += AI; all_team += AT
+                    empty_districts += E
+                    if W: wildcards.append(W)
+                except Exception as e:
+                    print(f"error in all-regions: {e}")
         indiv_results.sort(reverse=True)
         team_results.sort(reverse=True)
         all_indiv.sort(reverse=True)
         all_team.sort(reverse=True)
-    else:  # choice == 3
-        indiv_results, team_results, all_indiv, all_team = regional_parser()
+    else:
+        indiv_results, team_results, all_indiv, all_team, wildcard = regional_parser(params)
         empty_districts = []
-    
-    # Format results for JSON response
-    formatted_indiv = []
-    formatted_all_indiv = []
-    current_rank = 1
-    prev_score = None
-    
-    # First, format all individual results (for CSV)
+
+    # format individual results
+    formatted_indiv, formatted_all_indiv = [], []
+    rank, prev = 1, None
     for res in all_indiv:
         score = int(res[0])
-        # If score is different from previous, update rank
-        if score != prev_score:
-            current_rank = len(formatted_all_indiv) + 1
-        prev_score = score
-        
-        # Check if this result is in the qualifying results
+        if score != prev:
+            rank = len(formatted_all_indiv) + 1
+        prev = score
         is_qualified = res in indiv_results
-        
+        d = {"rank": rank, "score": score, "name": res[2], "school": res[3], "district": res[4], "qualified": is_qualified}
         if subj == 12:
-            result_dict = {
-                "rank": current_rank,
-                "score": score,
-                "name": res[2],
-                "school": res[3],
-                "district": res[4],
-                "bio": res[-3],
-                "chem": res[-2],
-                "phys": res[-1],
-                "qualified": is_qualified
-            }
-        else:
-            result_dict = {
-                "rank": current_rank,
-                "score": score,
-                "name": res[2],
-                "school": res[3],
-                "district": res[4],
-                "qualified": is_qualified
-            }
-            if comp == "CS" and len(res) > 5:
-                result_dict["prog_score"] = res[5]
-        
-        formatted_all_indiv.append(result_dict)
+            d.update({"bio": res[-3], "chem": res[-2], "phys": res[-1]})
+        elif comp == "CS" and len(res) > 5:
+            d["prog_score"] = res[5]
+        formatted_all_indiv.append(d)
         if is_qualified:
-            # Create a copy for the display list, we'll update ranks later
-            display_dict = result_dict.copy()
-            formatted_indiv.append(display_dict)
-    
-    # Update ranks for display list to be continuous
-    current_rank = 1
-    prev_score = None
-    for result in formatted_indiv:
-        score = result['score']
-        if score != prev_score:
-            current_rank = len([r for r in formatted_indiv if r['score'] > score]) + 1
-        result['rank'] = current_rank
-        prev_score = score
-    
-    # Format team results
-    formatted_team = []
-    formatted_all_team = []
-    current_rank = 1
-    prev_score = None
-    
-    # Format all team results (for CSV)
+            formatted_indiv.append(d.copy())
+
+    # re-rank qualified individuals
+    rank, prev = 1, None
+    for r in formatted_indiv:
+        if r['score'] != prev:
+            rank = sum(1 for x in formatted_indiv if x['score'] > r['score']) + 1
+        r['rank'] = rank
+        prev = r['score']
+
+    # format team results
+    formatted_team, formatted_all_team = [], []
+    rank, prev = 1, None
+    # figure out which team is the wildcard (for choice==2, pick best wildcard across regions)
+    wc = wildcard
+    if choice == 2 and wildcards:
+        wc = max(wildcards, key=lambda t: t[0])
+
     for res in all_team:
         score = res[0]
-        # If score is different from previous, update rank
-        if score != prev_score:
-            current_rank = len(formatted_all_team) + 1
-        prev_score = score
-        
-        # Check if this team is in the qualifying results
+        if score != prev:
+            rank = len(formatted_all_team) + 1
+        prev = score
         is_qualified = res in team_results
-        
-        result_dict = {
-            "rank": current_rank,
-            "score": score,
-            "school": res[4],
-            "district": res[5],
-            "names": res[6],
-            "qualified": is_qualified,
-            "fourth": int(res[2]),
-            "prog_score": int(res[1])
+        is_wildcard = (wc is not None and res == wc)
+        d = {
+            "rank": rank, "score": score, "school": res[4], "district": res[5],
+            "names": res[6], "qualified": is_qualified, "wildcard": is_wildcard,
+            "fourth": int(res[2]), "prog_score": int(res[1])
         }
-        
-        formatted_all_team.append(result_dict)
+        formatted_all_team.append(d)
         if is_qualified:
-            # Create a copy for the display list, we'll update ranks later
-            display_dict = result_dict.copy()
-            formatted_team.append(display_dict)
-    
-    # Update ranks for display team list to be continuous
-    current_rank = 1
-    prev_score = None
-    for result in formatted_team:
-        score, prog, fourth = result['score'], result['prog_score'], result['fourth']
-        if prev_score != (score, prog, fourth):
-            current_rank = len([r for r in formatted_team if (r['score'], r['prog_score'], r['fourth']) > (score, prog, fourth)]) + 1
-        result['rank'] = current_rank
-        prev_score = (score, prog, fourth)
-    
+            formatted_team.append(d.copy())
+
+    # re-rank qualified teams
+    rank, prev = 1, None
+    for r in formatted_team:
+        key = (r['score'], r['prog_score'], r['fourth'])
+        if key != prev:
+            rank = sum(1 for x in formatted_team if (x['score'], x['prog_score'], x['fourth']) > key) + 1
+        r['rank'] = rank
+        prev = key
+
     return jsonify({
-        "individual": formatted_indiv,  # Only qualifying individuals (for display)
-        "team": formatted_team,         # Only qualifying teams (for display)
-        "all_individual": formatted_all_indiv,  # All individuals (for CSV)
-        "all_team": formatted_all_team,        # All teams (for CSV)
+        "individual": formatted_indiv,
+        "team": formatted_team,
+        "all_individual": formatted_all_indiv,
+        "all_team": formatted_all_team,
         "empty_districts": empty_districts
     })
 
 @app.route('/download_csv', methods=['POST'])
 def download_csv():
     data = request.json
-    results = data['results']
-    competition = data['competition']
-    year = data['year']
-    conf = data['conf']
-    choice = data['choice']
+    results, competition = data['results'], data['competition']
+    year, conf, choice = data['year'], data['conf'], data['choice']
     type = data['type']
     
     # Create CSV in memory

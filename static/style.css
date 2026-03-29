@@ -69,35 +69,6 @@ tbody tr:hover {
     background-color: #f3f4f6;
 }
 
-/* Darker region-based colors with hover effects */
-.bg-red-50 {
-    background-color: #fee2e2;
-}
-.bg-red-50:hover {
-    background-color: #fecaca;
-}
-
-.bg-orange-50 {
-    background-color: #ffedd5;
-}
-.bg-orange-50:hover {
-    background-color: #fdba74;
-}
-
-.bg-green-50 {
-    background-color: #dcfce7;
-}
-.bg-green-50:hover {
-    background-color: #bbf7d0;
-}
-
-.bg-blue-50 {
-    background-color: #dbeafe;
-}
-.bg-blue-50:hover {
-    background-color: #bfdbfe;
-}
-
 /* Ensure consistent widths between header and body */
 th, td {
     box-sizing: border-box;
@@ -130,12 +101,6 @@ thead th {
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
 }
 
-/* Ensure table cells maintain their width */
-th[style], td[style] {
-    width: var(--width) !important;
-    min-width: var(--width) !important;
-    max-width: var(--width) !important;
-} 
 
 #competitionTitle {
     text-align: center;

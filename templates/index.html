@@ -4,13 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UIL Results Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-
-    <!-- comment out if using local tailwind installation -->
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-
-    <!-- uncomment if using local tailwind installation -->
-    <!-- <link rel="stylesheet" href="{{ url_for('static', filename='output.css') }}"> -->
     <style>
         /* Region-based colors */
         .region-1-row {
@@ -52,9 +47,9 @@
                     <div>
                         <label class="block text-sm font-medium text-gray-700">Year</label>
                         <select name="year" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
-                            <option value="2023">2023</option>
-                            <option value="2024">2024</option>
-                            <option value="2025">2025</option>
+                            {% for y in years %}
+                            <option value="{{ y }}" {% if loop.last %}selected{% endif %}>{{ y }}</option>
+                            {% endfor %}
                         </select>
                     </div>
                     
@@ -107,8 +102,16 @@
         
         <!-- Loading Spinner -->
         <div id="loading" class="hidden">
-            <div class="flex justify-center items-center">
+            <div class="flex flex-col justify-center items-center gap-2">
                 <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                <p id="loadingText" class="text-sm text-gray-500"></p>
+            </div>
+        </div>
+
+        <!-- Error Banner -->
+        <div id="errorBanner" class="hidden mb-4">
+            <div class="bg-red-50 border-l-4 border-red-400 p-4">
+                <p class="text-sm text-red-700" id="errorText"></p>
             </div>
         </div>
         
@@ -161,7 +164,13 @@
             
             <!-- Individual Results -->
             <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-                <h3 class="text-xl font-semibold mb-4 text-gray-800">Individual Results</h3>
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-xl font-semibold text-gray-800">Individual Results</h3>
+                    <div class="flex rounded-md shadow-sm">
+                        <button id="showAllIndiv" class="px-3 py-1 text-sm rounded-l-md bg-blue-100 text-blue-700 border border-blue-200">All</button>
+                        <button id="showQualifiedIndiv" class="px-3 py-1 text-sm rounded-r-md bg-gray-100 text-gray-700 border border-gray-200">Qualified</button>
+                    </div>
+                </div>
                 <div class="overflow-hidden">
                     <div class="overflow-y-auto" style="max-height: 575px;">
                         <table class="min-w-full divide-y divide-gray-200">
@@ -232,6 +241,7 @@
             let currentConf = null;
             let currentComp = null;
             let currentChoice = null;
+            let showAllIndiv = true;
             
             // Show/hide region input based on choice
             function updateRegionVisibility() {
@@ -239,7 +249,33 @@
             }
             
             choiceSelect.addEventListener('change', updateRegionVisibility);
-            updateRegionVisibility(); // Initial state
+            updateRegionVisibility();
+
+            // all/qualified toggle for individual results
+            document.getElementById('showAllIndiv').addEventListener('click', function() {
+                if (!currentResults) return;
+                showAllIndiv = true;
+                this.classList.replace('bg-gray-100', 'bg-blue-100');
+                this.classList.replace('text-gray-700', 'text-blue-700');
+                this.classList.replace('border-gray-200', 'border-blue-200');
+                const other = document.getElementById('showQualifiedIndiv');
+                other.classList.replace('bg-blue-100', 'bg-gray-100');
+                other.classList.replace('text-blue-700', 'text-gray-700');
+                other.classList.replace('border-blue-200', 'border-gray-200');
+                updateIndividualResults(currentResults.all_individual);
+            });
+            document.getElementById('showQualifiedIndiv').addEventListener('click', function() {
+                if (!currentResults) return;
+                showAllIndiv = false;
+                this.classList.replace('bg-gray-100', 'bg-blue-100');
+                this.classList.replace('text-gray-700', 'text-blue-700');
+                this.classList.replace('border-gray-200', 'border-blue-200');
+                const other = document.getElementById('showAllIndiv');
+                other.classList.replace('bg-blue-100', 'bg-gray-100');
+                other.classList.replace('text-blue-700', 'text-gray-700');
+                other.classList.replace('border-blue-200', 'border-gray-200');
+                updateIndividualResults(currentResults.individual);
+            });
             
             document.querySelectorAll('.sort-btn').forEach(btn => {
                 btn.addEventListener('click', function () {
@@ -255,7 +291,8 @@
 
                     // Sort and rank results
                     const sortBy = this.dataset.sort;
-                    const sortedResults = [...currentResults.individual];
+                    const source = showAllIndiv ? currentResults.all_individual : currentResults.individual;
+                    const sortedResults = [...source];
 
                     if (sortBy === 'overall') {
                         sortedResults.sort((a, b) => b.score - a.score);
@@ -288,14 +325,18 @@
 
             function getRegionClass(district) {
                 if (district.startsWith('Region')) {
-                    const regionNum = district.split(' ')[1];
-                    return `region-${regionNum}-row`;
+                    return `region-${district.split(' ')[1]}-row`;
                 } else if (district.startsWith('District')) {
                     const distNum = parseInt(district.split(' ')[1]);
+                    if (currentChoice === '1') {
+                        // single region: cycle 4 colors across districts
+                        return `region-${((distNum - 1) % 4) + 1}-row`;
+                    }
+                    // all regions: color by region
                     if (distNum <= 8) return 'region-1-row';
-                    else if (distNum <= 16) return 'region-2-row';
-                    else if (distNum <= 24) return 'region-3-row';
-                    else return 'region-4-row';
+                    if (distNum <= 16) return 'region-2-row';
+                    if (distNum <= 24) return 'region-3-row';
+                    return 'region-4-row';
                 }
                 return '';
             }
@@ -347,9 +388,9 @@
                 const hasProgScore = res.prog_score !== -999;
                 const colorClass = getRegionClass(res.district);
                 row.className = colorClass;
-                console.log(res.prog_score)
+                const wc = res.wildcard ? '*' : '';
                 row.innerHTML = `
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style="width: 80px">${res.rank}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style="width: 80px">${res.rank}${wc}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style="width: 100px">${res.score}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style="width: 200px">${res.school}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" style="width: 120px">${res.district}</td>
@@ -363,10 +404,12 @@
             
             form.addEventListener('submit', async function(e) {
                 e.preventDefault();
+                const errorBanner = document.getElementById('errorBanner');
+                errorBanner.classList.add('hidden');
                 loading.classList.remove('hidden');
                 results.classList.add('hidden');
                 downloadSection.classList.add('hidden');
-                
+
                 const formData = new FormData(form);
                 const data = {
                     year: formData.get('year'),
@@ -375,16 +418,16 @@
                     choice: formData.get('choice'),
                     region: formData.get('region')
                 };
-                
+
+                // loading text
+                document.getElementById('loadingText').textContent = `Fetching ${competitions[data.comp]} results...`;
+
                 try {
                     const response = await fetch('/results', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(data)
                     });
-                    
                     const result = await response.json();
                     currentResults = result;
                     currentYear = data.year;
@@ -392,7 +435,7 @@
                     currentComp = formData.get('comp');
                     currentChoice = data.choice;
 
-                    // Handle empty districts warning
+                    // empty districts warning
                     const emptyDistrictsWarning = document.getElementById('emptyDistrictsWarning');
                     const emptyDistrictsList = document.getElementById('emptyDistrictsList');
                     if (result.empty_districts && result.empty_districts.length > 0) {
@@ -402,32 +445,48 @@
                         emptyDistrictsWarning.classList.add('hidden');
                     }
 
-                    // Show/hide science sorting controls
+                    // show/hide science controls + headers
                     const hasScience = currentComp === '12';
                     scienceSorting.classList.toggle('hidden', !hasScience);
-                    // Show/hide science headers
-                    const bioHeader = document.getElementById('bioHeader');
-                    const chemHeader = document.getElementById('chemHeader');
-                    const physHeader = document.getElementById('physHeader');
-                    bioHeader.classList.toggle('hidden', !hasScience);
-                    chemHeader.classList.toggle('hidden', !hasScience);
-                    physHeader.classList.toggle('hidden', !hasScience);
+                    document.getElementById('bioHeader').classList.toggle('hidden', !hasScience);
+                    document.getElementById('chemHeader').classList.toggle('hidden', !hasScience);
+                    document.getElementById('physHeader').classList.toggle('hidden', !hasScience);
 
-                    // Show/hide CS prog header
-                    const csHeader = document.getElementById('progScoreHeader');
-                    csHeader.classList.toggle('hidden', currentComp !== '9');
+                    // reset sort buttons on new query
+                    document.querySelectorAll('.sort-btn').forEach((b, i) => {
+                        b.classList.toggle('bg-blue-100', i === 0);
+                        b.classList.toggle('text-blue-700', i === 0);
+                        b.classList.toggle('bg-gray-100', i !== 0);
+                        b.classList.toggle('text-gray-700', i !== 0);
+                    });
 
-                    // Update UI with results
+                    // show/hide CS prog header
+                    document.getElementById('progScoreHeader').classList.toggle('hidden', currentComp !== '9');
+
                     document.getElementById('competitionTitle').textContent = `${competitions[data.comp]} Results`;
-                    updateIndividualResults(result.individual);
+                    // default to showing all individuals
+                    showAllIndiv = true;
+                    document.getElementById('showAllIndiv').classList.replace('bg-gray-100', 'bg-blue-100');
+                    document.getElementById('showAllIndiv').classList.replace('text-gray-700', 'text-blue-700');
+                    document.getElementById('showAllIndiv').classList.replace('border-gray-200', 'border-blue-200');
+                    document.getElementById('showQualifiedIndiv').classList.replace('bg-blue-100', 'bg-gray-100');
+                    document.getElementById('showQualifiedIndiv').classList.replace('text-blue-700', 'text-gray-700');
+                    document.getElementById('showQualifiedIndiv').classList.replace('border-blue-200', 'border-gray-200');
+                    updateIndividualResults(result.all_individual);
                     updateTeamResults(result.team);
-                    
-                  // Show results and download buttons
+
+                    // check if results are empty
+                    if (result.individual.length === 0 && result.team.length === 0) {
+                        document.getElementById('errorText').textContent = 'No results found for this selection.';
+                        errorBanner.classList.remove('hidden');
+                    }
+
                     results.classList.remove('hidden');
                     downloadSection.classList.remove('hidden');
                 } catch (error) {
                     console.error('Error:', error);
-                    alert('An error occurred while fetching results.');
+                    document.getElementById('errorText').textContent = 'An error occurred while fetching results. Please try again.';
+                    errorBanner.classList.remove('hidden');
                 } finally {
                     loading.classList.add('hidden');
                 }
@@ -468,7 +527,8 @@
                     }
                 } catch (error) {
                     console.error('Error:', error);
-                    alert('An error occurred while downloading the CSV.');
+                    document.getElementById('errorText').textContent = 'Error downloading CSV.';
+                    document.getElementById('errorBanner').classList.remove('hidden');
                 }
             });
             
@@ -507,7 +567,8 @@
                     }
                 } catch (error) {
                     console.error('Error:', error);
-                    alert('An error occurred while downloading the CSV.');
+                    document.getElementById('errorText').textContent = 'Error downloading CSV.';
+                    document.getElementById('errorBanner').classList.remove('hidden');
                 }
             });
         });

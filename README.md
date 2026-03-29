@@ -1,67 +1,33 @@
 # UIL Results Hub
 
-A web-based application for viewing UIL academic competition results, scraping the results from Speechwire. This application allows you to view district and regional results for various UIL academic competitions.
+> Fork of [warithr621/uil-hub](https://github.com/warithr621/uil-hub)
+
+A web app for viewing UIL academic competition results, scraped from Speechwire. Supports all 10 UIL academic contests across all classifications (1A-6A).
 
 ## Features
 
-- View district results for a single region or all regions
-- View regional results
-- Support for all UIL academic competitions
+- View district results (single region or all regions) and regional results
+- Wildcard team indicator (`*`) — best 2nd-place team per region
+- Dynamic year support (auto-discovers available years)
+- Concurrent scraping — all districts/regions fetched in parallel
+- Science sub-event sorting (overall/bio/chem/phys)
+- CS programming score column
+- CSV export for individual and team results
+- Region-based color coding
 
-## Prerequisites
+## Setup
 
-- Python 3.7 or higher
-- pip (Python package installer)
-
-## Installation
-
-1. Clone this repository:
 ```bash
-git clone https://github.com/warithr621/uil-hub.git
+git clone https://github.com/acemavrick/uil-hub.git
 cd uil-hub
-```
-
-2. Create a virtual environment (recommended):
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows, use: venv\Scripts\activate
-```
-
-3. Install the required packages:
-```bash
 pip install -r requirements.txt
-```
-
-## Running the Application
-
-1. Make sure your virtual environment is activated (if you created one)
-
-2. Start the Flask application:
-```bash
 python app.py
 ```
 
-3. Open your web browser and navigate to:
-```
-http://localhost:5000
-```
-If this doesn't work, check the terminal again, as it may ask you to open it in another location. For example:
-```bash
-* Running on http://127.0.0.1:5000 # use this website instead of localhost
-```
+Open http://localhost:5000
 
 ## Usage
 
-1. Select the competition year (2023-2025)
-2. Choose the classification (1A-6A)
-3. Select the view type:
-   - District Results (Single Region)
-   - District Results (All Regions)
-   - Regional Results
-4. Choose the contest
-5. If viewing single region results, select the region number
-6. Click "Get Results" to view the competition results
-
-## Contributing
-
-Questions? Feel free to submit issues and enhancement requests! 
+1. Select year, classification (1A-6A), view type, and contest
+2. Click "Get Results"
+3. Wildcard teams are marked with `*` next to their rank
